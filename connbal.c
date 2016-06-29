@@ -11,11 +11,13 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include "enums.h"
 #include "packet.h"
 
 const char *namefilt = NULL;
+int gotint = 0;
 
 /* Snoop data structures from RFC1761. Ints are big-endian. */
 
@@ -33,6 +35,12 @@ struct pkthdr {
 	uint32_t sec;
 	uint32_t usec;
 };
+
+void
+sigint_handler(int sig)
+{
+	gotint = 1;
+}
 
 int
 main(int argc, char *argv[])
@@ -75,6 +83,8 @@ main(int argc, char *argv[])
 		return (1);
 	}
 
+	signal(SIGINT, sigint_handler);
+
 	if (fread(&filehdr, sizeof (filehdr), 1, inp) != 1) {
 		fprintf(stderr, "failed to read snoop header\n");
 		return (2);
@@ -104,9 +114,12 @@ main(int argc, char *argv[])
 		uint8_t proto;
 
 		if (fread(&hdr, sizeof (hdr), 1, inp) != 1) {
-			if (feof(inp)) {
+			if (gotint) {
+				fprintf(stderr, "\n");
 				break;
 			}
+			if (feof(inp))
+				break;
 			fprintf(stderr, "failed to read capture record\n");
 			return (2);
 		}
@@ -122,6 +135,10 @@ main(int argc, char *argv[])
 		}
 
 		if (fread(data, hdr.reclen - sizeof (hdr), 1, inp) != 1) {
+			if (gotint) {
+				fprintf(stderr, "\n");
+				break;
+			}
 			fprintf(stderr, "failed to read capture data\n");
 			return (2);
 		}
@@ -199,6 +216,11 @@ main(int argc, char *argv[])
 			if (data[off + 13] == TCPFL_SYN) {
 				got_tcp_conn(src, dst, sport, dport);
 			}
+		}
+
+		if (gotint) {
+			fprintf(stderr, "\n");
+			break;
 		}
 	}
 
