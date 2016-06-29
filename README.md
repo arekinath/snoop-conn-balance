@@ -51,5 +51,28 @@ is probably fine, but can also be useful knowledge.
 ```
 $ make
 cc -o connbal connbal.c hash.c packet.c
+```
+
+Basic example of using it:
+
+```
 $ time snoop -c 1000 -s 0 -o /dev/stdout '(tcp and tcp[13] == 0x02) or (udp and port 53)' | ./connbal | sort -n
+```
+
+Using the new `-a` option (which can assess ongoing TCP streams as well as new
+SYNs):
+
+```
+$ time snoop -s 0 -o /dev/stdout '(tcp and less 128) or (udp and port 53)' | ./connbal -a
+Using device net0 (promiscuous mode)
+22734 ^C
+172.023.024.042 172.023.024.012:1390    1       8       _ldap._tcp.ufds.coal.cns.joyent.us.
+172.023.024.042 172.023.024.012:1391    1       8       _ldap._tcp.ufds.coal.cns.joyent.us.
+172.023.024.042 172.023.024.012:1392    2       8       _ldap._tcp.ufds.coal.cns.joyent.us.
+172.023.024.042 172.023.024.012:1393    1       8       _ldap._tcp.ufds.coal.cns.joyent.us.
+172.023.024.042 172.023.024.005:53      0       8       _dns._udp.binder.coal.cns.joyent.us.
+
+real    0m20.929s
+user    0m0.211s
+sys     0m0.573s
 ```
