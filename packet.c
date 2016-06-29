@@ -14,8 +14,21 @@
 
 #include "enums.h"
 #include "hash.h"
+#include "packet.h"
 
 extern const char *namefilt;
+
+struct tcpconn {
+	struct tcpconn *next;
+	uint32_t src;
+	uint32_t dst;
+	uint16_t sport;
+	uint16_t dport;
+};
+/*
+ * Hash table of known TCP connections, only used for -a.
+ */
+struct tcpconn *tcpconns[BUCKETS] = { NULL };
 
 struct dnsreq {
 	struct dnsreq *next;
@@ -163,11 +176,77 @@ make_backend(uint32_t src, uint32_t dst, const char *name, struct srvrec *srv)
 	backends[h] = b;
 }
 
+void
+got_tcp_fin(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport)
+{
+	int h;
+	struct tcpconn *pc, *c;
+
+	h = thash(src, dst, sport, dport);
+	for (pc = NULL, c = tcpconns[h]; c != NULL; pc = c, c = c->next) {
+		if (c->src == src && c->dst == dst && c->sport == sport &&
+		    c->dport == dport) {
+			if (pc == NULL)
+				tcpconns[h] = c->next;
+			else
+				pc->next = c->next;
+			return;
+		}
+	}
+
+	h = thash(dst, src, dport, sport);
+	for (pc = NULL, c = tcpconns[h]; c != NULL; pc = c, c = c->next) {
+		if (c->src == dst && c->dst == src && c->sport == dport &&
+		    c->dport == sport) {
+			if (pc == NULL)
+				tcpconns[h] = c->next;
+			else
+				pc->next = c->next;
+			return;
+		}
+	}
+}
+
+void
+got_tcp(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport)
+{
+	int h;
+	struct tcpconn *c;
+
+	h = thash(src, dst, sport, dport);
+	for (c = tcpconns[h]; c != NULL; c = c->next) {
+		if (c->src == src && c->dst == dst && c->sport == sport &&
+		    c->dport == dport) {
+			return;
+		}
+	}
+
+	h = thash(dst, src, dport, sport);
+	for (c = tcpconns[h]; c != NULL; c = c->next) {
+		if (c->src == dst && c->dst == src && c->sport == dport &&
+		    c->dport == sport) {
+			return;
+		}
+	}
+
+	h = thash(src, dst, sport, dport);
+	c = calloc(sizeof (*c), 1);
+	c->src = src;
+	c->dst = dst;
+	c->sport = sport;
+	c->dport = dport;
+	c->next = tcpconns[h];
+	tcpconns[h] = c;
+
+	got_tcp_syn(src, dst, sport, dport);
+	got_tcp_syn(dst, src, dport, sport);
+}
+
 /*
  * Called by connbal.c when any new TCP connection attempt is seen.
  */
 void
-got_tcp_conn(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport)
+got_tcp_syn(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport)
 {
 	int h, i;
 	struct backend *b;

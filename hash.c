@@ -44,3 +44,14 @@ bhash(uint32_t src, uint32_t dst)
 	memcpy(data + 4, &dst, 4);
 	return (fnvhash(data, 8) % BUCKETS);
 }
+
+int
+thash(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport)
+{
+	uint8_t data[12];
+	memcpy(data, &src, 4);
+	memcpy(data + 4, &dst, 4);
+	memcpy(data + 8, &sport, 2);
+	memcpy(data + 10, &dport, 2);
+	return (fnvhash(data, 12) % BUCKETS);
+}

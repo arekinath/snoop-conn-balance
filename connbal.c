@@ -42,6 +42,18 @@ sigint_handler(int sig)
 	gotint = 1;
 }
 
+void
+usage(void)
+{
+	fprintf(stderr,
+	    "Usage: ./connbal [-a] [-f inputfile] [-F filter]\n\n"
+	    "  -a               examine all TCP packets, not just SYNs\n"
+	    "  -f inputfile     snoop-format input file to read\n"
+	    "                   instead of stdin\n"
+	    "  -F filter        substring to look for in DNS names\n"
+	    "                   names that don't match will be ignored\n");
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -51,8 +63,9 @@ main(int argc, char *argv[])
 	uint32_t lastclean = 0;
 	FILE *inp = stdin;
 	int c;
+	int alltcp = 0;
 
-	while ((c = getopt(argc, argv, "f:F:")) != -1) {
+	while ((c = getopt(argc, argv, "af:F:")) != -1) {
 		switch (c) {
 		case 'f':
 			inp = fopen(optarg, "r");
@@ -64,22 +77,23 @@ main(int argc, char *argv[])
 		case 'F':
 			namefilt = optarg;
 			break;
+		case 'a':
+			alltcp = 1;
+			break;
 		case '?':
 			if (optopt == 'f' || optopt == 'F') {
 				fprintf(stderr,
 				    "Option -%c requires an argument\n",
 				    optopt);
 			}
-			fprintf(stderr,
-			    "Usage: ./connbal [-f inputfile] [-F filter]\n");
+			usage();
 			return (1);
 		default:
 			abort();
 		}
 	}
 	if (optind < argc) {
-		fprintf(stderr,
-		    "Usage: ./connbal [-f inputfile] [-F filter]\n");
+		usage();
 		return (1);
 	}
 
@@ -209,12 +223,22 @@ main(int argc, char *argv[])
 			memcpy(&dport, data + off + 2, 2);
 			dport = ntohs(dport);
 
+			if (alltcp) {
+				if ((data[off + 13] & TCPFL_FIN) ||
+				    (data[off + 13] & TCPFL_RST)) {
+					got_tcp_fin(src, dst, sport, dport);
+					continue;
+				}
+				got_tcp(src, dst, sport, dport);
+				continue;
+			}
+
 			/*
 			 * When the only flag set is TCPFL_SYN, it's a request
 			 * for a new connection.
 			 */
 			if (data[off + 13] == TCPFL_SYN) {
-				got_tcp_conn(src, dst, sport, dport);
+				got_tcp_syn(src, dst, sport, dport);
 			}
 		}
 

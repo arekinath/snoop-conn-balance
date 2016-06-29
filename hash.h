@@ -16,5 +16,6 @@
 int shash(const char *target);
 int dhash(uint32_t src, uint16_t qid);
 int bhash(uint32_t src, uint32_t dst);
+int thash(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport);
 
 #endif
