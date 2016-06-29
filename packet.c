@@ -413,6 +413,13 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 		while (off < len) {
 			uint16_t rtype, rclass, rlen;
 
+			if (pos == NSP_ANSWER && ac <= 0)
+				pos = NSP_AUTHORITY;
+			if (pos == NSP_AUTHORITY && nc <= 0)
+				pos = NSP_ADDITIONAL;
+			if (pos == NSP_ADDITIONAL && ec <= 0)
+				break;
+
 			if (read_nsname(data, &off, len, name, 256)) {
 				free(nr);
 				return;
@@ -427,6 +434,10 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 			memcpy(&rlen, data + off, 2);
 			rlen = ntohs(rlen);
 			off += 2;
+
+			if (rtype == NST_OPT)
+				goto next;
+
 			if (rclass != NSC_IN) {
 				free(nr);
 				return;
@@ -441,17 +452,14 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 
 			if (pos == NSP_AUTHORITY)
 				goto next;
-			if (pos == NSP_ADDITIONAL && !didsrv) {
-				free(nr);
-				return;
-			}
 
 			if (rtype == NST_CNAME && tac <= 2 && srv == NULL) {
 				free(nr);
 				return;
 			}
 
-			if (rtype == NST_A && (tac > 1 || srv != NULL)) {
+			if (rtype == NST_A && (
+			    (pos == NSP_ANSWER && tac > 1) || srv != NULL)) {
 				uint32_t addr;
 				memcpy(&addr, data + off, 4);
 				addr = ntohl(addr);
@@ -476,23 +484,12 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 
 next:
 			off += rlen;
-			switch (pos) {
-			case NSP_QUESTION:
-				abort();
-			case NSP_ANSWER:
-				if (--ac <= 0)
-					pos = NSP_AUTHORITY;
-				break;
-			case NSP_AUTHORITY:
-				if (--nc <= 0)
-					pos = NSP_ADDITIONAL;
-				break;
-			case NSP_ADDITIONAL:
-				if (--ec <= 0) {
-					free(nr);
-					return;
-				}
-			}
+			if (pos == NSP_ANSWER)
+				--ac;
+			else if (pos == NSP_AUTHORITY)
+				--nc;
+			else if (pos == NSP_ADDITIONAL)
+				--ec;
 		}
 		
 		free(nr);

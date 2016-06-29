@@ -47,7 +47,8 @@ enum nstype {
 	NST_NS = 0x02,
 	NST_CNAME = 0x05,
 	NST_AAAA = 0x1c,
-	NST_SRV = 0x21
+	NST_SRV = 0x21,
+	NST_OPT = 0x29
 };
 
 enum nspos {
