@@ -17,6 +17,8 @@
 
 const char *namefilt = NULL;
 
+/* Snoop data structures from RFC1761. Ints are big-endian. */
+
 struct snoophdr {
 	char magic[8];
 	uint32_t version;
@@ -108,23 +110,32 @@ main(int argc, char *argv[])
 			fprintf(stderr, "failed to read capture record\n");
 			return (2);
 		}
+
 		hdr.reclen = ntohl(hdr.reclen);
 		plen = hdr.reclen - sizeof (hdr);
+
+		/* Expand "data" until it can fit this entire packet. */
 		while (plen > dlen) {
 			dlen *= 2;
 			free(data);
 			data = malloc(dlen);
 		}
+
 		if (fread(data, hdr.reclen - sizeof (hdr), 1, inp) != 1) {
 			fprintf(stderr, "failed to read capture data\n");
 			return (2);
 		}
+
 		hdr.len = ntohl(hdr.len);
 		hdr.snap = ntohl(hdr.snap);
 		hdr.drops = ntohl(hdr.drops);
 		hdr.sec = ntohl(hdr.sec);
 		hdr.usec = ntohl(hdr.usec);
 
+		/*
+		 * Time out DNS requests after 10 sec -- stop tracking them so
+		 * that they don't take up space in our hash table.
+		 */
 		if (hdr.sec - lastclean > 10) {
 			clean_dns(hdr.sec);
 			lastclean = hdr.sec;
@@ -137,6 +148,7 @@ main(int argc, char *argv[])
 		memcpy(&mactype, data + off, 2);
 		off += 2;
 		mactype = ntohs(mactype);
+
 		if (mactype == MAC_DOT1Q) {
 			off += 2; /* ignore vlan id for now */
 			memcpy(&mactype, data + off, 2);
@@ -147,6 +159,7 @@ main(int argc, char *argv[])
 		if (mactype != MAC_IP4)
 			continue;
 
+		/* We only handle IPv4. */
 		if ((data[off] & 0xf0) >> 4 != 4)
 			continue;
 		iplen = (data[off] & 0x0f) * 4;
@@ -172,18 +185,24 @@ main(int argc, char *argv[])
 				parse_dns(src, dst, sport, dport,
 				    data + off, hdr.snap - off, hdr.sec);
 			}
+
 		} else if (proto == PR_TCP) {
 			memcpy(&sport, data + off, 2);
 			sport = ntohs(sport);
 			memcpy(&dport, data + off + 2, 2);
 			dport = ntohs(dport);
 
+			/*
+			 * When the only flag set is TCPFL_SYN, it's a request
+			 * for a new connection.
+			 */
 			if (data[off + 13] == TCPFL_SYN) {
 				got_tcp_conn(src, dst, sport, dport);
 			}
 		}
 	}
 
+	/* And finally, print out the summary of all the data we collected. */
 	print_summary();
 
 	return (0);

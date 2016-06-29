@@ -19,13 +19,17 @@ extern const char *namefilt;
 
 struct dnsreq {
 	struct dnsreq *next;
-	uint16_t qid;
-	uint32_t src;
+	uint16_t qid;			/* DNS query id */
+	uint32_t src;			/* source IP of original req */
 	uint32_t dst;
 	uint16_t sport;
-	uint32_t ctime;
+	uint32_t ctime;			/* value of snoop hdr.sec at creation */
 	char name[256];
 };
+/*
+ * All DNS requests that are currently outstanding that match our filters,
+ * hashed on src,qid.
+ */
 struct dnsreq *dnsreqs[BUCKETS] = { NULL };
 
 struct srvrec {
@@ -34,6 +38,11 @@ struct srvrec {
 	char name[256];
 	uint16_t ports[16];
 };
+/*
+ * All SRV records we've seen, hashed on target name. We probably should expire
+ * these or something, but for now we just remember SRV targets we've seen
+ * forever.
+ */
 struct srvrec *srvrecs[BUCKETS] = { NULL };
 
 struct backend {
@@ -42,12 +51,19 @@ struct backend {
 	uint32_t dst;
 	uint64_t rcount;
 	char name[256];
-	uint16_t ports[16];
-	uint64_t counts[16];
-	uint64_t rcounts[16];
+	uint16_t ports[16];		/* unused slots are 0 */
+	uint64_t counts[16];		/* conn count, same index as ports */
+	uint64_t rcounts[16];		/* # of times returned in DNS results */
 };
+/*
+ * Actual backends that have been seen in DNS, which we are now tracking
+ * connections to.
+ */
 struct backend *backends[BUCKETS] = { NULL };
 
+/*
+ * Add a port to a port set (like b->ports on a struct backend).
+ */
 int
 add_port(uint16_t *ports, uint16_t port)
 {
@@ -143,6 +159,9 @@ make_backend(uint32_t src, uint32_t dst, const char *name, struct srvrec *srv)
 	backends[h] = b;
 }
 
+/*
+ * Called by connbal.c when any new TCP connection attempt is seen.
+ */
 void
 got_tcp_conn(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport)
 {
@@ -198,6 +217,13 @@ print_summary(void)
 	}
 }
 
+/*
+ * Reads in a DNS nsName string. These consist of a set of length-prefixed
+ * labels. If the length prefix has certain high bits set, it is a back-pointer
+ * referring to another nsName earlier in the packet.
+ *
+ * Returns 0 on success.
+ */
 int
 read_nsname(const uint8_t *data, int *offset, int len, char *out, int olen)
 {
@@ -207,10 +233,12 @@ read_nsname(const uint8_t *data, int *offset, int len, char *out, int olen)
 		n = data[r++];
 		if (n == 0x00) {
 			break;
+
 		} else if ((n & NSM_MASK) == NSM_STRING) {
 			memcpy(out + w, data + r, n);
 			w += n; r += n;
 			out[w++] = '.';
+
 		} else if ((n & NSM_MASK) == NSM_PTR) {
 			uint16_t ptr = data[r++];
 			int recuroff;
@@ -225,6 +253,7 @@ read_nsname(const uint8_t *data, int *offset, int len, char *out, int olen)
 			}
 			*offset = r;
 			return (0);
+
 		} else {
 			return (1);
 		}
@@ -234,6 +263,7 @@ read_nsname(const uint8_t *data, int *offset, int len, char *out, int olen)
 	return (0);
 }
 
+/* Clean out expired DNS requests. */
 void
 clean_dns(uint32_t time)
 {
@@ -260,6 +290,7 @@ clean_dns(uint32_t time)
 	}
 }
 
+/* Parse a snooped DNS packet and index its contents. */
 void
 parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
     const uint8_t *data, int len, uint32_t time)
@@ -272,6 +303,11 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 		fprintf(stderr, "warning: snaplen too low\n");
 		return;
 	}
+
+	/*
+	 * Read in the header of the packet, containing the counts of records
+	 * in the sections to follow (qc, ac, nc, ec).
+	 */
 	memcpy(&qid, data + off, 2);
 	qid = ntohs(qid);
 	off += 2;
@@ -293,6 +329,11 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 	memcpy(&ec, data + off, 2);
 	ec = ntohs(ec);
 	off += 2;
+
+	/*
+	 * If this is outgoing to the NS and has one question in it, it could
+	 * be a request we want to track.
+	 */
 	if (dport == 53 && qc == 1) {
 		struct dnsreq *r = NULL;
 		uint16_t qtype, qclass;
@@ -323,6 +364,12 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 		h = dhash(src, qid);
 		r->next = dnsreqs[h];
 		dnsreqs[h] = r;
+
+	/*
+	 * If it's incoming *from* the NS and has some answers in it, it could
+	 * also be interesting, but only if it matches up with an interesting
+	 * request we started tracking earlier.
+	 */
 	} else if (sport == 53 && ac != 0) {
 		struct dnsreq *r = NULL, *nr = NULL;
 		struct srvrec *srv = NULL;
@@ -332,6 +379,8 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 			return;
 		}
 		off += 4; /* type, qclass */
+
+		/* Find a matching tracked DNS request. */
 		h = dhash(dst, qid);
 		for (nr = dnsreqs[h]; nr != NULL; r = nr, nr = r->next) {
 			if (nr->qid == qid && nr->dst == src &&
@@ -343,6 +392,8 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 		if (nr == NULL) {
 			return;
 		}
+
+		/* Unlink it from the list. */
 		if (r == NULL)
 			dnsreqs[h] = nr->next;
 		else
@@ -351,6 +402,7 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 		srv = find_srv_target(name);
 		pos = NSP_ANSWER;
 
+		/* Parse all the answers and additional records */
 		while (off < len) {
 			uint16_t rtype, rclass, rlen;
 
