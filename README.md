@@ -53,14 +53,24 @@ $ make
 cc -o connbal connbal.c hash.c packet.c
 ```
 
+You can also download binaries for OSX and Illumos/SmartOS from the
+["Releases" section on GitHub](https://github.com/arekinath/snoop-conn-balance/releases).
+
 Basic example of using it:
 
 ```
 $ time snoop -c 1000 -s 0 -o /dev/stdout '(tcp and tcp[13] == 0x02) or (udp and port 53)' | ./connbal | sort -n
 ```
 
-Using the new `-a` option (which can assess ongoing TCP streams as well as new
-SYNs):
+We filter the `snoop` to cover only TCP SYN packets and UDP packets involving
+port 53 -- this way the kernel is not sending huge amounts of data to userland
+that `connbal` is simply going to discard anyway.
+
+The `sort -n` and `time` commands are useful to make the output more readable
+(and you can tell if TTLs are being respected by comparing the number of
+lookups to the time sampled).
+
+We can also use the new `-a` option, which can assess ongoing TCP streams as well as new SYNs:
 
 ```
 $ time snoop -s 0 -o /dev/stdout '(tcp and less 128) or (udp and port 53)' | ./connbal -a
@@ -76,3 +86,26 @@ real    0m20.929s
 user    0m0.211s
 sys     0m0.573s
 ```
+
+In this case, we only want to filter to "small" TCP packets (to avoid moving
+lots of bulk data to userland) as well as DNS. Using the `-a` option can be
+expensive in memory and CPU on busy networks (expect 10-20% of a core in CPU
+time and 1-2MB of memory per minute on a 12 CN SDC cluster observing CNS
+during an update run), but it's the only way to assess connection balance of
+ongoing connections as well as newly made ones.
+
+The `-F` option can also be used to filter the names that will be tracked:
+
+```
+$ time snoop -s 0 -o /dev/stdout '(tcp and less 128) or (udp and port 53)' | ./connbal -a -F binder
+Using device net0 (promiscuous mode)
+22730 ^C
+172.023.024.042 172.023.024.005:53      0       8       _dns._udp.binder.coal.cns.joyent.us.
+
+real    0m19.429s
+user    0m0.198s
+sys     0m0.610s
+```
+
+This is useful if there are a lot of other irrelevant DNS lookups going on and
+you want to avoid `connbal` wasting its time and memory tracking them.
