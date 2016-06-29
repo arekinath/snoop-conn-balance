@@ -152,10 +152,14 @@ make_backend(uint32_t src, uint32_t dst, const char *name, struct srvrec *srv)
 	strlcpy(b->name, (srv == NULL ? name : srv->name), sizeof (b->name));
 	b->src = src;
 	b->dst = dst;
-	b->rcount = 1;
 	b->next = backends[h];
-	if (srv != NULL)
+	if (srv != NULL) {
 		memcpy(b->ports, srv->ports, sizeof (b->ports));
+		for (i = 0; i < 16 && b->ports[i] != 0; ++i)
+			b->rcounts[i] = 1;
+	} else {
+		b->rcount = 1;
+	}
 	backends[h] = b;
 }
 
@@ -179,6 +183,7 @@ got_tcp_conn(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport)
 				return;
 			}
 			b->counts[i]++;
+			return;
 		}
 	}
 }
@@ -202,8 +207,8 @@ print_summary(void)
 				    srcb[3], srcb[2], srcb[1], srcb[0],
 				    dstb[3], dstb[2], dstb[1], dstb[0],
 				    b->ports[i], b->counts[i],
-				    b->rcounts[i] == 0 ? b->rcount :
-				    b->rcounts[i], b->name);
+				    (b->rcount > 0) ? b->rcount : b->rcounts[i],
+				    b->name);
 			}
 			if (b->ports[0] == 0) {
 				fprintf(stdout, "%03u.%03u.%03u.%03u\t"
@@ -295,7 +300,7 @@ void
 parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
     const uint8_t *data, int len, uint32_t time)
 {
-	uint16_t qid, qc, ac, nc, ec;
+	uint16_t qid, qc, ac, nc, ec, tac;
 	int h, off = 0;
 	enum nspos pos = NSP_QUESTION;
 
@@ -317,6 +322,7 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 	off += 2;
 	memcpy(&ac, data + off, 2);
 	ac = ntohs(ac);
+	tac = ac;
 	off += 2;
 	if (qc > 1 || ac > 1000) {
 		fprintf(stderr, "warning: weird looking dns packet "
@@ -374,6 +380,7 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 		struct dnsreq *r = NULL, *nr = NULL;
 		struct srvrec *srv = NULL;
 		char name[256];
+		int didsrv = 0;
 
 		if (read_nsname(data, &off, len, name, 256)) {
 			return;
@@ -432,12 +439,19 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 				srv = find_srv_target(name);
 			}
 
-			if (rtype == NST_CNAME && ac <= 1 && srv == NULL) {
+			if (pos == NSP_AUTHORITY)
+				goto next;
+			if (pos == NSP_ADDITIONAL && !didsrv) {
 				free(nr);
 				return;
 			}
 
-			if (rtype == NST_A && (ac > 1 || srv != NULL)) {
+			if (rtype == NST_CNAME && tac <= 2 && srv == NULL) {
+				free(nr);
+				return;
+			}
+
+			if (rtype == NST_A && (tac > 1 || srv != NULL)) {
 				uint32_t addr;
 				memcpy(&addr, data + off, 4);
 				addr = ntohl(addr);
@@ -457,9 +471,11 @@ parse_dns(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
 					return;
 				}
 				saw_srv_target(target, port, name);
+				didsrv = 1;
 			}
-			off += rlen;
 
+next:
+			off += rlen;
 			switch (pos) {
 			case NSP_QUESTION:
 				abort();
